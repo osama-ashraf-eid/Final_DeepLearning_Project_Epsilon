@@ -7,6 +7,13 @@ from collections import defaultdict
 import gdown
 from ultralytics import YOLO
 from PIL import Image
+import urllib.request
+
+# Ensure tracker config exists
+if not os.path.exists("bytetrack.yaml"):
+    tracker_url = "https://raw.githubusercontent.com/ultralytics/ultralytics/main/ultralytics/cfg/trackers/bytetrack.yaml"
+    urllib.request.urlretrieve(tracker_url, "bytetrack.yaml")
+
 
 # -----------------------
 # App config
@@ -283,6 +290,7 @@ if uploaded_video is not None:
 
 else:
     st.info("Upload a .mp4 football video to begin analysis.")
+
 
 
 
