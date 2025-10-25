@@ -5,21 +5,29 @@ import cv2
 import numpy as np
 from ultralytics import YOLO
 import gdown
-from PIL import Image
 import urllib.request
+from PIL import Image
 
 # -----------------------
-# إعداد التتبع
+# إعداد ملف التتبع
 # -----------------------
 if not os.path.exists("bytetrack.yaml"):
     tracker_url = "https://raw.githubusercontent.com/ultralytics/ultralytics/main/ultralytics/cfg/trackers/bytetrack.yaml"
     urllib.request.urlretrieve(tracker_url, "bytetrack.yaml")
 
 # -----------------------
-# إعداد واجهة Streamlit
+# إعداد واجهة التطبيق
 # -----------------------
 st.set_page_config(page_title="Football Tracking", layout="wide")
 st.markdown("<h1 style='text-align:center;color:#0b7dda;'>⚽ Football Tracking</h1>", unsafe_allow_html=True)
+
+# عرض الصورة في واجهة التطبيق
+DEFAULT_IMAGE = "football_img.jpg"
+if os.path.exists(DEFAULT_IMAGE):
+    st.image(DEFAULT_IMAGE, use_container_width=True, caption="Automated Football Match Tracking")
+else:
+    st.info("⚠️ Default image not found — please add 'football_img.jpg' to your app directory.")
+
 st.write("---")
 
 # -----------------------
@@ -30,9 +38,9 @@ DRIVE_FILE_ID = "1jDmtelt3wJgxRj0j7928VyFNAjq0dzk4"
 DRIVE_URL = f"https://drive.google.com/uc?id={DRIVE_FILE_ID}"
 
 if not os.path.exists(MODEL_PATH):
-    st.info("Downloading model from Google Drive...")
+    st.info("Downloading YOLO model from Google Drive...")
     gdown.download(DRIVE_URL, MODEL_PATH, quiet=False)
-    st.success("Model downloaded successfully.")
+    st.success("✅ Model downloaded successfully!")
 
 try:
     model = YOLO(MODEL_PATH)
@@ -43,16 +51,20 @@ except Exception as e:
 # -----------------------
 # رفع الفيديو
 # -----------------------
+st.subheader("🎥 Upload Football Video")
 uploaded_video = st.file_uploader("Upload a football video (.mp4)", type=["mp4"])
 TRACKER_FILE = "bytetrack.yaml"
 
 # -----------------------
+# ألوان العناصر
+# -----------------------
+color_ball = (0, 255, 255)        # Yellow for ball
+color_possession = (0, 255, 0)    # Green for player with ball
+color_referee = (200, 200, 200)   # Grey for referee
+
+# -----------------------
 # دوال مساعدة
 # -----------------------
-color_ball = (0, 255, 255)
-color_possession = (0, 255, 0)
-color_referee = (200, 200, 200)
-
 def get_average_color(frame, box):
     x1, y1, x2, y2 = box
     x1, y1, x2, y2 = max(0, x1), max(0, y1), min(frame.shape[1], x2), min(frame.shape[0], y2)
@@ -80,12 +92,12 @@ def assign_team(player_id, color, team_colors):
     return team_colors[player_id]
 
 # -----------------------
-# تشغيل التحليل
+# تنفيذ التتبع
 # -----------------------
 if uploaded_video is not None:
+    # حفظ الفيديو مؤقتًا
     tfile = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
     tfile.write(uploaded_video.read())
-    tfile.flush()
     video_path = tfile.name
 
     st.info("Processing video... Please wait ⏳")
@@ -115,8 +127,9 @@ if uploaded_video is not None:
                 break
 
         processed_frames += 1
-        progress = processed_frames / frame_count if frame_count > 0 else 0
-        progress_bar.progress(min(progress, 1.0))
+        if frame_count > 0:
+            progress = processed_frames / frame_count
+            progress_bar.progress(min(progress, 1.0))
         progress_text.text(f"Processing frame {processed_frames}/{frame_count}")
 
         box_ids = getattr(frame_data.boxes, "id", None)
@@ -132,15 +145,16 @@ if uploaded_video is not None:
 
         for box, cls, track_id in zip(boxes, classes, ids):
             x1, y1, x2, y2 = map(int, box)
+
             if cls == 0:  # Ball
                 balls.append((track_id, (x1, y1, x2, y2)))
                 cv2.rectangle(frame, (x1, y1), (x2, y2), color_ball, 2)
                 cv2.putText(frame, "Ball", (x1, y1 - 10), cv2.FONT_HERSHEY_DUPLEX, 0.7, color_ball, 2)
+
             elif cls in [1, 2]:  # Player / Goalkeeper
                 avg_color = get_average_color(frame, (x1, y1, x2, y2))
                 team_color = assign_team(track_id, avg_color, team_colors)
 
-                # تصنيف الفريق حسب سطوع اللون
                 if np.mean(team_color) < 128:
                     draw_color = (0, 0, 255)
                     team_name = "Team A"
@@ -150,12 +164,15 @@ if uploaded_video is not None:
 
                 players.append((track_id, (x1, y1, x2, y2), team_name))
                 cv2.rectangle(frame, (x1, y1), (x2, y2), draw_color, 2)
-                cv2.putText(frame, f"{team_name} #{track_id}", (x1, y1 - 10), cv2.FONT_HERSHEY_DUPLEX, 0.7, draw_color, 2)
-            else:
-                cv2.rectangle(frame, (x1, y1), (x2, y2), color_referee, 2)
-                cv2.putText(frame, "Referee", (x1, y1 - 10), cv2.FONT_HERSHEY_DUPLEX, 0.6, color_referee, 2)
+                cv2.putText(frame, f"{team_name} #{track_id}", (x1, y1 - 10),
+                            cv2.FONT_HERSHEY_DUPLEX, 0.7, draw_color, 2)
 
-        # Highlight player with the ball
+            else:  # Referee
+                cv2.rectangle(frame, (x1, y1), (x2, y2), color_referee, 2)
+                cv2.putText(frame, "Referee", (x1, y1 - 10),
+                            cv2.FONT_HERSHEY_DUPLEX, 0.6, color_referee, 2)
+
+        # تحديد اللاعب اللي معاه الكورة
         current_owner_id = None
         if len(balls) > 0 and len(players) > 0:
             bx1, by1, bx2, by2 = balls[0][1]
@@ -174,18 +191,20 @@ if uploaded_video is not None:
                     if player_id == current_owner_id:
                         px1, py1, px2, py2 = box
                         cv2.rectangle(frame, (px1, py1), (px2, py2), color_possession, 4)
-                        cv2.putText(frame, f"{team_name} #{player_id} HAS THE BALL", (px1, py1 - 15),
-                                    cv2.FONT_HERSHEY_COMPLEX, 0.8, color_possession, 3)
+                        cv2.putText(frame, f"{team_name} #{player_id} HAS THE BALL",
+                                    (px1, py1 - 15), cv2.FONT_HERSHEY_COMPLEX, 0.8, color_possession, 3)
 
         out.write(frame)
 
     cap.release()
     out.release()
-    progress_text.text("Processing completed ✅")
+    progress_text.text("✅ Processing completed!")
     progress_bar.progress(1.0)
 
+    st.success("🎬 Video processed successfully!")
     st.video(tmp_out.name)
     with open(tmp_out.name, "rb") as f:
-        st.download_button("Download Processed Video", data=f, file_name="football_tracking_result.mp4")
+        st.download_button("📥 Download Processed Video", data=f, file_name="football_tracking_result.mp4")
+
 else:
-    st.info("Upload a .mp4 football video to begin tracking.")
+    st.info("📤 Please upload a .mp4 football video to start tracking.")
