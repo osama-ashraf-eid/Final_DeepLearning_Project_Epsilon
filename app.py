@@ -1,3 +1,4 @@
+# app.py — Improved possession & pass detection for Streamlit
 import streamlit as st
 import os
 import tempfile
@@ -6,11 +7,10 @@ import numpy as np
 from collections import defaultdict
 import gdown
 from ultralytics import YOLO
-from PIL import Image
 import urllib.request
-import pandas as pd
-import networkx as nx
 import matplotlib.pyplot as plt
+import networkx as nx
+import pandas as pd
 
 # -----------------------
 # Ensure tracker config exists
@@ -20,17 +20,16 @@ if not os.path.exists("bytetrack.yaml"):
     urllib.request.urlretrieve(tracker_url, "bytetrack.yaml")
 
 # -----------------------
-# App config
+# App config (UI text in English)
 # -----------------------
 st.set_page_config(page_title="Football Tracking & Analysis", layout="wide")
 st.markdown("<h1 style='text-align:center;color:#0b7dda;'>⚽ Football Tracking & Analysis</h1>", unsafe_allow_html=True)
 
-# Header image
 DEFAULT_IMAGE = "football_img.jpg"
 if os.path.exists(DEFAULT_IMAGE):
     st.image(DEFAULT_IMAGE, use_container_width=True, caption="Automated Football Match Analysis")
 else:
-    st.info("Default header image not found in repo. Upload or add 'football_img.jpg' to the repository root.")
+    st.info("Default header image not found in repo. Add 'football_img.jpg' to repository root if you want a header image.")
 
 st.write("---")
 
@@ -64,64 +63,56 @@ except Exception as e:
 # -----------------------
 st.subheader("Upload Video for Analysis")
 uploaded_video = st.file_uploader("Choose a football video (.mp4)", type=["mp4"])
-
 TRACKER_FILE = "bytetrack.yaml"
 
 # -----------------------
 # Helper functions
 # -----------------------
-color_ball = (0, 255, 255)
-color_referee = (200, 200, 200)
-color_possession = (0, 255, 0)
-
 def get_average_color(frame, box):
     x1, y1, x2, y2 = box
     x1 = max(0, x1); y1 = max(0, y1)
     x2 = min(frame.shape[1], x2); y2 = min(frame.shape[0], y2)
     roi = frame[y1:y2, x1:x2]
     if roi.size == 0:
-        return np.array([0, 0, 0])
-    return np.mean(roi.reshape(-1, 3), axis=0)
+        return np.array([0,0,0])
+    return np.mean(roi.reshape(-1,3), axis=0)
 
-def assign_team(player_id, color, team_colors):
-    if player_id not in team_colors:
-        if len(team_colors) == 0:
-            team_colors[player_id] = color
-        else:
-            min_dist = 1e9
-            assigned_team = None
-            for pid, c in team_colors.items():
-                dist = np.linalg.norm(color - c)
-                if dist < min_dist:
-                    min_dist = dist
-                    assigned_team = pid
-            if min_dist < 40:
-                team_colors[player_id] = team_colors[assigned_team]
-            else:
-                team_colors[player_id] = color
-    return team_colors[player_id]
+def center_in_expanded_bbox(center, box, margin=8):
+    x1, y1, x2, y2 = box
+    x1m, y1m = int(x1 - margin), int(y1 - margin)
+    x2m, y2m = int(x2 + margin), int(y2 + margin)
+    return (center[0] >= x1m and center[0] <= x2m and center[1] >= y1m and center[1] <= y2m)
 
 # -----------------------
-# Process video
+# Parameters (tweak these for your camera/video)
+# -----------------------
+HOLD_FRAMES = 3               # frames required to confirm a new owner (3 works for ~25-30fps)
+PROXIMITY_PX = 60             # how close (pixels) to consider "near"
+SPEED_THRESHOLD_PX_PER_S = 300.0  # if ball speed > this -> likely airborne / fast pass
+OVERLAP_MARGIN = 8
+MIN_FRAMES_BETWEEN_PASSES = 2  # avoid counting same pass multiple times quickly
+
+# -----------------------
+# Process when video uploaded
 # -----------------------
 if uploaded_video is not None:
     tfile = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
     tfile.write(uploaded_video.read())
+    tfile.flush()
     video_path = tfile.name
 
-    st.info("Analyzing video... Please wait ⏳")
+    st.info("Analyzing video — please wait...")
     progress_text = st.empty()
     progress_bar = st.progress(0.0)
 
     cap = cv2.VideoCapture(video_path)
-    w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+    h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
     fps = cap.get(cv2.CAP_PROP_FPS) or 20.0
     frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
 
     tmp_out = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
-    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-    out = cv2.VideoWriter(tmp_out.name, fourcc, fps, (w, h))
+    out = cv2.VideoWriter(tmp_out.name, cv2.VideoWriter_fourcc(*"mp4v"), fps, (w, h))
 
     tracker_arg = TRACKER_FILE if os.path.exists(TRACKER_FILE) else None
 
@@ -131,31 +122,36 @@ if uploaded_video is not None:
             tracker=tracker_arg, persist=True, stream=True
         )
     except Exception as e:
+        cap.release(); out.release()
         st.error(f"model.track failed: {e}")
         st.stop()
 
-    # --- state ---
-    last_owner_id = None                # last confirmed owner (used for counting passes)
+    # --- state variables for possession & passes ---
+    prev_ball_center = None
+    prev_ball_time = None
+
+    candidate_id = None
+    candidate_streak = 0
+
+    confirmed_owner = None         # currently confirmed owner (player id)
+    confirmed_since = 0            # frames since confirmed
+
+    last_confirmed_owner = None    # previous confirmed owner (for pass counting)
+    last_pass_frame = -9999
+
     possession_counter = defaultdict(int)
-    passes = []                         # list of tuples (from_id, to_id)
-    team_colors = {}
     team_possession_counter = defaultdict(int)
+    passes = []                    # list of (from_id, to_id, frame_idx)
+    team_colors = {}
     team_passes_counter = defaultdict(int)
 
-    # stable ownership variables
-    stable_owner_id = None
-    stable_count = 0
-    STABLE_FRAMES = 3            # frames required to confirm a new owner
-    PROXIMITY_THRESHOLD = 70    # pixels to consider "near"
-    IN_AIR_HEIGHT = 8           # ball bbox height less than this -> likely in air
+    last_player_boxes = {}         # last seen box for each player id (for arrow drawing)
+    seen_players = set()
 
     processed_frames = 0
 
-    # For pass-graph plotting later, we will accumulate set of player IDs seen and passes
-    seen_players = set()
-
-    # Iterate stream
-    for frame_data in results_stream:
+    # Iterate streaming results
+    for frame_idx, frame_data in enumerate(results_stream, start=1):
         try:
             frame = frame_data.orig_img.copy()
         except Exception:
@@ -164,138 +160,169 @@ if uploaded_video is not None:
                 break
 
         processed_frames += 1
-        progress = min(processed_frames / max(frame_count, 1), 1.0)
-        progress_bar.progress(progress)
-        progress_text.text(f"Processed {processed_frames}/{frame_count} frames")
+        if frame_count > 0:
+            progress = min(processed_frames / frame_count, 1.0)
+            progress_bar.progress(progress)
+            progress_text.text(f"Processed {processed_frames}/{frame_count} frames")
+        else:
+            progress_text.text(f"Processed {processed_frames} frames")
 
-        box_ids = getattr(frame_data.boxes, "id", None)
-        if box_ids is None:
-            out.write(frame)
-            continue
-
+        # get boxes/classes/ids
         boxes = frame_data.boxes.xyxy.cpu().numpy()
         classes = frame_data.boxes.cls.cpu().numpy().astype(int)
-        ids = frame_data.boxes.id.cpu().numpy().astype(int)
+        ids = frame_data.boxes.id.cpu().numpy().astype(int) if hasattr(frame_data.boxes, "id") else np.array([])
 
-        balls, players = [], []
+        balls = []
+        players = []
 
-        for box, cls, track_id in zip(boxes, classes, ids):
+        for box, cls, tid in zip(boxes, classes, ids):
             x1, y1, x2, y2 = map(int, box)
             if cls == 0:  # ball
-                balls.append((track_id, (x1, y1, x2, y2)))
-                cv2.rectangle(frame, (x1, y1), (x2, y2), color_ball, 2)
-                cv2.putText(frame, "Ball", (x1, y1 - 10), cv2.FONT_HERSHEY_DUPLEX, 0.7, color_ball, 2)
-            elif cls in [1, 2]:  # player
-                avg_color = get_average_color(frame, (x1, y1, x2, y2))
-                team_color = assign_team(track_id, avg_color, team_colors)
-                if np.mean(team_color) < 128:
-                    draw_color = (0, 0, 255); team_name = "Team A"
-                else:
-                    draw_color = (255, 0, 0); team_name = "Team B"
-                players.append((track_id, (x1, y1, x2, y2), team_name))
-                seen_players.add(track_id)
-                cv2.rectangle(frame, (x1, y1), (x2, y2), draw_color, 2)
-                cv2.putText(frame, f"{team_name} #{track_id}", (x1, y1 - 10),
-                            cv2.FONT_HERSHEY_DUPLEX, 0.7, draw_color, 2)
+                balls.append((tid, (x1, y1, x2, y2)))
+                cv2.rectangle(frame, (x1,y1), (x2,y2), (0,255,255), 2)
+            elif cls in [1,2]:  # player/goalkeeper
+                avg_color = get_average_color(frame, (x1,y1,x2,y2))
+                team_color = assign_team(tid, avg_color, team_colors)
+                team_name = "Team A" if np.mean(team_color) < 128 else "Team B"
+                players.append((tid, (x1,y1,x2,y2), team_name))
+                last_player_boxes[tid] = (x1,y1,x2,y2)
+                seen_players.add(tid)
+                # draw player box
+                color = (0,0,255) if team_name=="Team A" else (255,0,0)
+                cv2.rectangle(frame, (x1,y1), (x2,y2), color, 2)
+                cv2.putText(frame, f"{team_name} #{tid}", (x1, y1-8), cv2.FONT_HERSHEY_DUPLEX, 0.6, color, 2)
 
-        # --- Ball possession logic (stable owner) ---
-        current_owner_id = None
-        current_owner_team = None
-        if len(balls) > 0 and len(players) > 0:
+        # --- compute ball center & speed ---
+        ball_center = None
+        ball_speed = 0.0
+        ball_box_h = 0
+        if len(balls) > 0:
             bx1, by1, bx2, by2 = balls[0][1]
-            ball_center = np.array([(bx1 + bx2) / 2, (by1 + by2) / 2])
-            ball_h = (by2 - by1)
+            ball_center = np.array([(bx1+bx2)/2.0, (by1+by2)/2.0])
+            ball_box_h = (by2 - by1)
+            if prev_ball_center is not None and fps > 0:
+                dist = np.linalg.norm(ball_center - prev_ball_center)
+                ball_speed = dist * fps
+            prev_ball_center = ball_center.copy()
 
-            # detect likely in-air by small bbox height
-            ball_in_air = ball_h < IN_AIR_HEIGHT
+        # --- candidate selection: nearest player & overlap check ---
+        nearest_player = None
+        nearest_team = None
+        nearest_box = None
+        min_dist = 1e9
 
-            # find nearest player
-            min_dist = 1e9
-            nearest_player = None
-            nearest_team = None
-            nearest_box = None
-            for player_id, box, team_name in players:
+        if ball_center is not None and len(players) > 0:
+            for pid, box, team in players:
                 px1, py1, px2, py2 = box
-                player_center = np.array([(px1 + px2) / 2, (py1 + py2) / 2])
-                dist = np.linalg.norm(ball_center - player_center)
-                if dist < min_dist:
-                    min_dist = dist
-                    nearest_player = player_id
-                    nearest_team = team_name
+                player_center = np.array([(px1+px2)/2.0, (py1+py2)/2.0])
+                d = np.linalg.norm(ball_center - player_center)
+                if d < min_dist:
+                    min_dist = d
+                    nearest_player = pid
+                    nearest_team = team
                     nearest_box = box
 
-            # only consider if ball not in air and within proximity
-            if (not ball_in_air) and (min_dist < PROXIMITY_THRESHOLD):
-                # stable check
-                if stable_owner_id == nearest_player:
-                    stable_count += 1
-                else:
-                    stable_owner_id = nearest_player
-                    stable_count = 1
+        # decide if ball is likely in-air
+        ball_in_air = False
+        if ball_center is None:
+            ball_in_air = True
+        else:
+            if ball_speed > SPEED_THRESHOLD_PX_PER_S:
+                ball_in_air = True
+            # also if bbox very small (far/air) treat as in-air
+            if ball_box_h < 6:
+                ball_in_air = True
 
-                if stable_count >= STABLE_FRAMES:
-                    current_owner_id = stable_owner_id
-                    current_owner_team = nearest_team
+        # Candidate logic: require proximity AND (not in-air OR overlap)
+        candidate_ok = False
+        if nearest_player is not None:
+            overlap = center_in_expanded_bbox(ball_center, nearest_box, OVERLAP_MARGIN) if nearest_box is not None else False
+            prox = (min_dist < PROXIMITY_PX)
+            if prox and (not ball_in_air or overlap):
+                candidate_ok = True
 
-                    # update possession counters
-                    possession_counter[current_owner_id] += 1
-                    team_possession_counter[current_owner_team] += 1
-
-                    # count pass only if last_owner_id exists and is different
-                    if (last_owner_id is not None) and (current_owner_id != last_owner_id):
-                        passes.append((last_owner_id, current_owner_id))
-                        team_passes_counter[current_owner_team] += 1
-                        # draw arrow between last_owner and current_owner if available in current players list
-                        p_from = next((p for p in players if p[0] == last_owner_id), None)
-                        p_to = next((p for p in players if p[0] == current_owner_id), None)
-                        if p_from is not None and p_to is not None:
-                            fx1, fy1, fx2, fy2 = p_from[0] if False else p_from[1]  # safe unpack
-                            # correct unpack:
-                            fx1, fy1, fx2, fy2 = p_from[1]
-                            tx1, ty1, tx2, ty2 = p_to[1]
-                            from_center = (int((fx1 + fx2) / 2), int((fy1 + fy2) / 2))
-                            to_center = (int((tx1 + tx2) / 2), int((ty1 + ty2) / 2))
-                            cv2.arrowedLine(frame, from_center, to_center, (0, 255, 255), 4, tipLength=0.3)
-
-                    # set last owner if not set (this ensures first confirmed owner becomes last_owner for next pass)
-                    if last_owner_id is None:
-                        last_owner_id = current_owner_id
-                    else:
-                        last_owner_id = current_owner_id
+        # Update candidate streak
+        if candidate_ok:
+            if candidate_id == nearest_player:
+                candidate_streak += 1
             else:
-                # ball in air or too far -> reset stability (but keep last_owner_id)
-                stable_owner_id = None
-                stable_count = 0
+                candidate_id = nearest_player
+                candidate_streak = 1
+        else:
+            candidate_id = None
+            candidate_streak = 0
 
-        # Highlight current owner (the one currently nearest; may be None)
-        if current_owner_id is not None:
-            for player_id, box, team_name in players:
-                if player_id == current_owner_id:
-                    px1, py1, px2, py2 = box
-                    cv2.rectangle(frame, (px1, py1), (px2, py2), color_possession, 4)
-                    cv2.putText(frame, f"{team_name} #{player_id} HAS THE BALL",
-                                (px1, py1 - 15), cv2.FONT_HERSHEY_COMPLEX, 0.8, color_possession, 3)
+        # Confirm ownership only when candidate streak >= HOLD_FRAMES
+        if candidate_id is not None and candidate_streak >= HOLD_FRAMES:
+            new_confirmed = candidate_id
+        else:
+            new_confirmed = None
 
-        # Overlay stats
+        # If we have a confirmed owner: update counters and passes
+        if new_confirmed is not None:
+            confirmed_owner = new_confirmed
+            confirmed_since += 1
+            # increment possession frames
+            possession_counter[confirmed_owner] += 1
+            team = next((t for pid,t in [(p[0],p[2]) for p in players] if pid==confirmed_owner), None)
+            if team is not None:
+                team_possession_counter[team] += 1
+
+            # check pass: if last_confirmed exists and different and enough frames since last pass
+            if (last_confirmed_owner is not None) and (confirmed_owner != last_confirmed_owner):
+                if (frame_idx - last_pass_frame) >= MIN_FRAMES_BETWEEN_PASSES:
+                    passes.append((last_confirmed_owner, confirmed_owner, frame_idx))
+                    # increment team-level pass counter for receiver's team
+                    recv_team = None
+                    for pid,box,tname in players:
+                        if pid == confirmed_owner:
+                            recv_team = tname; break
+                    if recv_team is not None:
+                        team_passes_counter[recv_team] += 1
+                    last_pass_frame = frame_idx
+            # update last_confirmed_owner if different
+            last_confirmed_owner = confirmed_owner
+        else:
+            # no confirmed owner this frame: do not change last_confirmed_owner
+            confirmed_since = 0
+
+        # Draw arrow for passes that occurred in this frame (use last seen boxes)
+        # We stored passes with frame_idx; draw arrow if frame_idx just equals now (or a small window)
+        recent_passes = [p for p in passes if p[2] == frame_idx]
+        for pf, pt, fidx in recent_passes:
+            if (pf in last_player_boxes) and (pt in last_player_boxes):
+                fx1,fy1,fx2,fy2 = last_player_boxes[pf]
+                tx1,ty1,tx2,ty2 = last_player_boxes[pt]
+                from_center = (int((fx1+fx2)/2), int((fy1+fy2)/2))
+                to_center = (int((tx1+tx2)/2), int((ty1+ty2)/2))
+                cv2.arrowedLine(frame, from_center, to_center, (0,255,255), 3, tipLength=0.25)
+
+        # Highlight current confirmed owner (if any)
+        if confirmed_owner is not None:
+            box = last_player_boxes.get(confirmed_owner, None)
+            if box is not None:
+                px1,py1,px2,py2 = box
+                cv2.rectangle(frame, (px1,py1), (px2,py2), color_possession, 3)
+                cv2.putText(frame, f"HAS BALL #{confirmed_owner}", (px1, py1-20),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, color_possession, 2)
+
+        # Overlay small stats on frame
         start_y = 30
-        for idx, (player_id, count) in enumerate(possession_counter.items()):
-            cv2.putText(frame, f"P{player_id} Possession: {count}f",
-                        (10, start_y + idx * 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 200, 255), 2)
-        offset = start_y + len(possession_counter) * 25 + 10
-        for team_name, count in team_possession_counter.items():
-            cv2.putText(frame, f"{team_name}: {count}f", (10, offset),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-            offset += 25
-        cv2.putText(frame, f"Total Passes: {len(passes)}", (10, offset),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+        for idx, (pid, cnt) in enumerate(possession_counter.items()):
+            cv2.putText(frame, f"P{pid} Poss:{cnt}f", (10, start_y + idx*20), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0,200,255), 2)
+        off = start_y + len(possession_counter)*20 + 10
+        for tname, cnt in team_possession_counter.items():
+            cv2.putText(frame, f"{tname}: {cnt}f", (10, off), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,255,0), 2)
+            off += 20
+        cv2.putText(frame, f"Passes: {len(passes)}", (10, off), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,255,255), 2)
 
         out.write(frame)
 
-    # --- Done processing ---
+    # release
     cap.release()
     out.release()
     progress_bar.progress(1.0)
-    progress_text.text("Processing completed ✅")
+    progress_text.text("Processing completed")
 
     st.success("Analysis completed.")
     st.video(tmp_out.name)
@@ -303,49 +330,43 @@ if uploaded_video is not None:
         st.download_button("Download processed video", data=f, file_name="football_tracking_result.mp4")
 
     # -----------------------
-    # Pass analysis + visualization
+    # Show textual stats & pass graph
     # -----------------------
-    st.write("### Ball Possession Summary")
-    for player_id, count in possession_counter.items():
-        st.write(f"Player {player_id}: {count} frames")
+    st.write("### Ball Possession Summary (frames)")
+    for pid, cnt in possession_counter.items():
+        st.write(f"Player {pid}: {cnt} frames")
 
-    st.write("### Team Possession")
-    for team_name, count in team_possession_counter.items():
-        st.write(f"{team_name}: {count} frames")
+    st.write("### Team Possession (frames)")
+    for tname, cnt in team_possession_counter.items():
+        st.write(f"{tname}: {cnt} frames")
 
-    st.write("### Total Passes")
-    for i, (f_id, t_id) in enumerate(passes, 1):
-        st.write(f"{i}. Player {f_id} → Player {t_id}")
+    st.write("### Pass list (from -> to) and frame")
+    for i, (a,b,fidx) in enumerate(passes, start=1):
+        st.write(f"{i}. Player {a} → Player {b}  (frame {fidx})")
 
-    # Build pass counts matrix
+    # pass counts matrix
     if len(passes) > 0:
-        pass_counts = defaultdict(int)
-        for a, b in passes:
-            pass_counts[(a, b)] += 1
+        pc = defaultdict(int)
+        for a,b,_ in passes:
+            pc[(a,b)] += 1
+        rows = [{"from":a,"to":b,"count":c} for (a,b),c in pc.items()]
+        df = pd.DataFrame(rows).sort_values("count", ascending=False)
+        st.write("### Pass counts table")
+        st.dataframe(df, use_container_width=True)
 
-        # Convert to DataFrame for display
-        rows = []
-        for (a, b), c in pass_counts.items():
-            rows.append({"from": a, "to": b, "count": c})
-        df_pass = pd.DataFrame(rows).sort_values("count", ascending=False)
-        st.write("### Passes table (from -> to -> count)")
-        st.dataframe(df_pass, use_container_width=True)
-
-        # Draw directed pass graph
+        # draw pass graph
         G = nx.DiGraph()
         for p in seen_players:
             G.add_node(p)
-        for (a, b), c in pass_counts.items():
-            G.add_edge(a, b, weight=c)
-
-        plt.figure(figsize=(8, 6))
+        for (a,b),c in pc.items():
+            G.add_edge(a,b,weight=c)
+        plt.figure(figsize=(8,6))
         pos = nx.spring_layout(G, seed=42)
-        weights = [G[u][v]["weight"] for u, v in G.edges()]
+        weights = [G[u][v]['weight'] for u,v in G.edges()]
         nx.draw(G, pos, with_labels=True, node_color="lightblue", node_size=800,
-                arrows=True, width=np.array(weights) * 0.5, edge_color="gray", font_size=10)
-        edge_labels = {(u, v): d["weight"] for u, v, d in G.edges(data=True)}
-        nx.draw_networkx_edge_labels(G, pos, edge_labels=edge_labels, font_color="red")
-        plt.title("Pass Graph (directed)")
+                arrows=True, width=np.array(weights)*0.5, edge_color='gray', font_size=9)
+        edge_labels = {(u,v):d['weight'] for u,v,d in G.edges(data=True)}
+        nx.draw_networkx_edge_labels(G, pos, edge_labels=edge_labels)
         st.pyplot(plt)
     else:
         st.info("No passes detected in this video.")
