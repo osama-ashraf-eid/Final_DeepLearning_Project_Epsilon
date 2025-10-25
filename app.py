@@ -1,4 +1,3 @@
-# app.py — Improved possession & pass detection for Streamlit
 import streamlit as st
 import os
 import tempfile
@@ -68,14 +67,44 @@ TRACKER_FILE = "bytetrack.yaml"
 # -----------------------
 # Helper functions
 # -----------------------
+color_ball = (0, 255, 255)
+color_referee = (200, 200, 200)
+color_possession = (0, 255, 0)
+
 def get_average_color(frame, box):
     x1, y1, x2, y2 = box
-    x1 = max(0, x1); y1 = max(0, y1)
-    x2 = min(frame.shape[1], x2); y2 = min(frame.shape[0], y2)
+    x1 = max(0, int(x1)); y1 = max(0, int(y1))
+    x2 = min(frame.shape[1], int(x2)); y2 = min(frame.shape[0], int(y2))
+    if x2 <= x1 or y2 <= y1:
+        return np.array([0,0,0])
     roi = frame[y1:y2, x1:x2]
     if roi.size == 0:
-        return np.array([0,0,0])
-    return np.mean(roi.reshape(-1,3), axis=0)
+        return np.array([0, 0, 0])
+    return np.mean(roi.reshape(-1, 3), axis=0)
+
+def assign_team(player_id, color, team_colors):
+    """
+    If this player_id is new, assign it a team color based on proximity in color space
+    to existing team colors. Returns the assigned color (numpy array).
+    """
+    color = np.array(color)
+    if player_id not in team_colors:
+        if len(team_colors) == 0:
+            team_colors[player_id] = color
+        else:
+            min_dist = 1e9
+            assigned_team = None
+            for pid, c in team_colors.items():
+                # c may be numpy array
+                dist = np.linalg.norm(color - c)
+                if dist < min_dist:
+                    min_dist = dist
+                    assigned_team = pid
+            if min_dist < 40:
+                team_colors[player_id] = team_colors[assigned_team]
+            else:
+                team_colors[player_id] = color
+    return team_colors[player_id]
 
 def center_in_expanded_bbox(center, box, margin=8):
     x1, y1, x2, y2 = box
@@ -128,8 +157,6 @@ if uploaded_video is not None:
 
     # --- state variables for possession & passes ---
     prev_ball_center = None
-    prev_ball_time = None
-
     candidate_id = None
     candidate_streak = 0
 
@@ -179,7 +206,7 @@ if uploaded_video is not None:
             x1, y1, x2, y2 = map(int, box)
             if cls == 0:  # ball
                 balls.append((tid, (x1, y1, x2, y2)))
-                cv2.rectangle(frame, (x1,y1), (x2,y2), (0,255,255), 2)
+                cv2.rectangle(frame, (x1,y1), (x2,y2), color_ball, 2)
             elif cls in [1,2]:  # player/goalkeeper
                 avg_color = get_average_color(frame, (x1,y1,x2,y2))
                 team_color = assign_team(tid, avg_color, team_colors)
@@ -188,9 +215,9 @@ if uploaded_video is not None:
                 last_player_boxes[tid] = (x1,y1,x2,y2)
                 seen_players.add(tid)
                 # draw player box
-                color = (0,0,255) if team_name=="Team A" else (255,0,0)
-                cv2.rectangle(frame, (x1,y1), (x2,y2), color, 2)
-                cv2.putText(frame, f"{team_name} #{tid}", (x1, y1-8), cv2.FONT_HERSHEY_DUPLEX, 0.6, color, 2)
+                draw_col = (0,0,255) if team_name=="Team A" else (255,0,0)
+                cv2.rectangle(frame, (x1,y1), (x2,y2), draw_col, 2)
+                cv2.putText(frame, f"{team_name} #{tid}", (x1, y1-8), cv2.FONT_HERSHEY_DUPLEX, 0.6, draw_col, 2)
 
         # --- compute ball center & speed ---
         ball_center = None
@@ -229,7 +256,6 @@ if uploaded_video is not None:
         else:
             if ball_speed > SPEED_THRESHOLD_PX_PER_S:
                 ball_in_air = True
-            # also if bbox very small (far/air) treat as in-air
             if ball_box_h < 6:
                 ball_in_air = True
 
@@ -264,30 +290,28 @@ if uploaded_video is not None:
             confirmed_since += 1
             # increment possession frames
             possession_counter[confirmed_owner] += 1
-            team = next((t for pid,t in [(p[0],p[2]) for p in players] if pid==confirmed_owner), None)
-            if team is not None:
-                team_possession_counter[team] += 1
+            # increment team possession (try to get team from current players)
+            recv_team = None
+            for pid, box, tname in players:
+                if pid == confirmed_owner:
+                    recv_team = tname
+                    break
+            if recv_team is not None:
+                team_possession_counter[recv_team] += 1
 
             # check pass: if last_confirmed exists and different and enough frames since last pass
             if (last_confirmed_owner is not None) and (confirmed_owner != last_confirmed_owner):
                 if (frame_idx - last_pass_frame) >= MIN_FRAMES_BETWEEN_PASSES:
                     passes.append((last_confirmed_owner, confirmed_owner, frame_idx))
                     # increment team-level pass counter for receiver's team
-                    recv_team = None
-                    for pid,box,tname in players:
-                        if pid == confirmed_owner:
-                            recv_team = tname; break
                     if recv_team is not None:
                         team_passes_counter[recv_team] += 1
                     last_pass_frame = frame_idx
-            # update last_confirmed_owner if different
             last_confirmed_owner = confirmed_owner
         else:
-            # no confirmed owner this frame: do not change last_confirmed_owner
             confirmed_since = 0
 
-        # Draw arrow for passes that occurred in this frame (use last seen boxes)
-        # We stored passes with frame_idx; draw arrow if frame_idx just equals now (or a small window)
+        # Draw arrow for passes that occurred in this frame
         recent_passes = [p for p in passes if p[2] == frame_idx]
         for pf, pt, fidx in recent_passes:
             if (pf in last_player_boxes) and (pt in last_player_boxes):
