@@ -9,3 +9,4 @@ Pillow
 matplotlib
 gdown
 omegaconf
+lapx
