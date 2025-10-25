@@ -56,7 +56,7 @@ st.write("Upload an MP4 video. After processing, the annotated video will be sho
 uploaded_video = st.file_uploader("Choose a football video (.mp4)", type=["mp4"])
 
 # Optional tracker file: botsort.yaml (if not present, model.track will try to run without it)
-TRACKER_FILE = "botsort.yaml"
+TRACKER_FILE = "bytetrack.yaml"
 if not os.path.exists(TRACKER_FILE):
     st.info("Optional tracker file 'botsort.yaml' not found in repo. Tracking will continue using default settings if available.")
 
@@ -283,5 +283,6 @@ if uploaded_video is not None:
 
 else:
     st.info("Upload a .mp4 football video to begin analysis.")
+
 
 
