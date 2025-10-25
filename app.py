@@ -1,4 +1,4 @@
-```python
+
 import streamlit as st
 import os
 import tempfile
@@ -354,3 +354,4 @@ if uploaded_video is not None:
 else:
     st.info("Upload a .mp4 football video to begin analysis.")
 ```
+
