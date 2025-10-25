@@ -17,7 +17,7 @@ st.markdown("<h1 style='text-align:center;color:#0b7dda;'>⚽ Football Tracking 
 # Show header image (from repo)
 DEFAULT_IMAGE = "football_img.jpg"
 if os.path.exists(DEFAULT_IMAGE):
-    st.image(DEFAULT_IMAGE, use_column_width=True, caption="Automated Football Match Analysis")
+    st.image(DEFAULT_IMAGE, use_container_width=True, caption="Automated Football Match Analysis")
 else:
     st.info("Default header image not found in repo. Upload or add 'football_img.jpg' to the repository root.")
 
@@ -283,4 +283,5 @@ if uploaded_video is not None:
 
 else:
     st.info("Upload a .mp4 football video to begin analysis.")
+
 
