@@ -1,3 +1,4 @@
+```python
 import streamlit as st
 import os
 import tempfile
@@ -8,8 +9,13 @@ import gdown
 from ultralytics import YOLO
 from PIL import Image
 import urllib.request
+import pandas as pd
+import networkx as nx
+import matplotlib.pyplot as plt
 
+# -----------------------
 # Ensure tracker config exists
+# -----------------------
 if not os.path.exists("bytetrack.yaml"):
     tracker_url = "https://raw.githubusercontent.com/ultralytics/ultralytics/main/ultralytics/cfg/trackers/bytetrack.yaml"
     urllib.request.urlretrieve(tracker_url, "bytetrack.yaml")
@@ -112,7 +118,7 @@ if uploaded_video is not None:
     w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     fps = cap.get(cv2.CAP_PROP_FPS) or 20.0
-    frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
 
     tmp_out = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
@@ -130,17 +136,24 @@ if uploaded_video is not None:
         st.stop()
 
     # --- state ---
-    last_owner_id = None
+    last_owner_id = None                # last confirmed owner (used for counting passes)
     possession_counter = defaultdict(int)
-    passes = []
+    passes = []                         # list of tuples (from_id, to_id)
     team_colors = {}
     team_possession_counter = defaultdict(int)
     team_passes_counter = defaultdict(int)
-    near_frames = defaultdict(int)  # عدد الفريمات اللي الكرة فيها قريبة من اللاعب
+
+    # stable ownership variables
+    stable_owner_id = None
+    stable_count = 0
+    STABLE_FRAMES = 3            # frames required to confirm a new owner
+    PROXIMITY_THRESHOLD = 70    # pixels to consider "near"
+    IN_AIR_HEIGHT = 8           # ball bbox height less than this -> likely in air
 
     processed_frames = 0
-    PASS_DISTANCE_THRESHOLD = 70
-    PASS_CONFIRM_FRAMES = 2
+
+    # For pass-graph plotting later, we will accumulate set of player IDs seen and passes
+    seen_players = set()
 
     # Iterate stream
     for frame_data in results_stream:
@@ -181,59 +194,81 @@ if uploaded_video is not None:
                 else:
                     draw_color = (255, 0, 0); team_name = "Team B"
                 players.append((track_id, (x1, y1, x2, y2), team_name))
+                seen_players.add(track_id)
                 cv2.rectangle(frame, (x1, y1), (x2, y2), draw_color, 2)
                 cv2.putText(frame, f"{team_name} #{track_id}", (x1, y1 - 10),
                             cv2.FONT_HERSHEY_DUPLEX, 0.7, draw_color, 2)
 
-        # --- Ball possession logic ---
+        # --- Ball possession logic (stable owner) ---
         current_owner_id = None
         current_owner_team = None
         if len(balls) > 0 and len(players) > 0:
             bx1, by1, bx2, by2 = balls[0][1]
             ball_center = np.array([(bx1 + bx2) / 2, (by1 + by2) / 2])
+            ball_h = (by2 - by1)
 
+            # detect likely in-air by small bbox height
+            ball_in_air = ball_h < IN_AIR_HEIGHT
+
+            # find nearest player
             min_dist = 1e9
+            nearest_player = None
+            nearest_team = None
+            nearest_box = None
             for player_id, box, team_name in players:
                 px1, py1, px2, py2 = box
                 player_center = np.array([(px1 + px2) / 2, (py1 + py2) / 2])
                 dist = np.linalg.norm(ball_center - player_center)
                 if dist < min_dist:
                     min_dist = dist
-                    current_owner_id = player_id
-                    current_owner_team = team_name
+                    nearest_player = player_id
+                    nearest_team = team_name
+                    nearest_box = box
 
-            # --- الذكاء الجديد لتحديد التمريرات ---
-            if current_owner_id is not None:
-                if min_dist < PASS_DISTANCE_THRESHOLD:
-                    near_frames[current_owner_id] += 1
+            # only consider if ball not in air and within proximity
+            if (not ball_in_air) and (min_dist < PROXIMITY_THRESHOLD):
+                # stable check
+                if stable_owner_id == nearest_player:
+                    stable_count += 1
                 else:
-                    near_frames[current_owner_id] = 0
+                    stable_owner_id = nearest_player
+                    stable_count = 1
 
-                if near_frames[current_owner_id] >= PASS_CONFIRM_FRAMES:
+                if stable_count >= STABLE_FRAMES:
+                    current_owner_id = stable_owner_id
+                    current_owner_team = nearest_team
+
+                    # update possession counters
                     possession_counter[current_owner_id] += 1
                     team_possession_counter[current_owner_team] += 1
 
-                    if last_owner_id is not None and current_owner_id != last_owner_id:
+                    # count pass only if last_owner_id exists and is different
+                    if (last_owner_id is not None) and (current_owner_id != last_owner_id):
                         passes.append((last_owner_id, current_owner_id))
                         team_passes_counter[current_owner_team] += 1
-
-                        # 🎯 رسم سهم بين اللاعب اللي مرّر واللي استلم
-                        p_from = [p for p in players if p[0] == last_owner_id]
-                        p_to = [p for p in players if p[0] == current_owner_id]
-                        if p_from and p_to:
-                            fx1, fy1, fx2, fy2 = p_from[0][1]
-                            tx1, ty1, tx2, ty2 = p_to[0][1]
+                        # draw arrow between last_owner and current_owner if available in current players list
+                        p_from = next((p for p in players if p[0] == last_owner_id), None)
+                        p_to = next((p for p in players if p[0] == current_owner_id), None)
+                        if p_from is not None and p_to is not None:
+                            fx1, fy1, fx2, fy2 = p_from[0] if False else p_from[1]  # safe unpack
+                            # correct unpack:
+                            fx1, fy1, fx2, fy2 = p_from[1]
+                            tx1, ty1, tx2, ty2 = p_to[1]
                             from_center = (int((fx1 + fx2) / 2), int((fy1 + fy2) / 2))
                             to_center = (int((tx1 + tx2) / 2), int((ty1 + ty2) / 2))
                             cv2.arrowedLine(frame, from_center, to_center, (0, 255, 255), 4, tipLength=0.3)
 
-                    last_owner_id = current_owner_id
+                    # set last owner if not set (this ensures first confirmed owner becomes last_owner for next pass)
+                    if last_owner_id is None:
+                        last_owner_id = current_owner_id
+                    else:
+                        last_owner_id = current_owner_id
+            else:
+                # ball in air or too far -> reset stability (but keep last_owner_id)
+                stable_owner_id = None
+                stable_count = 0
 
-                for pid in list(near_frames.keys()):
-                    if pid != current_owner_id:
-                        near_frames[pid] = 0
-
-        # Highlight current owner
+        # Highlight current owner (the one currently nearest; may be None)
         if current_owner_id is not None:
             for player_id, box, team_name in players:
                 if player_id == current_owner_id:
@@ -257,8 +292,9 @@ if uploaded_video is not None:
 
         out.write(frame)
 
-    # --- نهاية التحليل ---
-    cap.release(); out.release()
+    # --- Done processing ---
+    cap.release()
+    out.release()
     progress_bar.progress(1.0)
     progress_text.text("Processing completed ✅")
 
@@ -267,15 +303,54 @@ if uploaded_video is not None:
     with open(tmp_out.name, "rb") as f:
         st.download_button("Download processed video", data=f, file_name="football_tracking_result.mp4")
 
+    # -----------------------
+    # Pass analysis + visualization
+    # -----------------------
     st.write("### Ball Possession Summary")
     for player_id, count in possession_counter.items():
         st.write(f"Player {player_id}: {count} frames")
+
     st.write("### Team Possession")
     for team_name, count in team_possession_counter.items():
         st.write(f"{team_name}: {count} frames")
+
     st.write("### Total Passes")
     for i, (f_id, t_id) in enumerate(passes, 1):
         st.write(f"{i}. Player {f_id} → Player {t_id}")
 
+    # Build pass counts matrix
+    if len(passes) > 0:
+        pass_counts = defaultdict(int)
+        for a, b in passes:
+            pass_counts[(a, b)] += 1
+
+        # Convert to DataFrame for display
+        rows = []
+        for (a, b), c in pass_counts.items():
+            rows.append({"from": a, "to": b, "count": c})
+        df_pass = pd.DataFrame(rows).sort_values("count", ascending=False)
+        st.write("### Passes table (from -> to -> count)")
+        st.dataframe(df_pass, use_container_width=True)
+
+        # Draw directed pass graph
+        G = nx.DiGraph()
+        for p in seen_players:
+            G.add_node(p)
+        for (a, b), c in pass_counts.items():
+            G.add_edge(a, b, weight=c)
+
+        plt.figure(figsize=(8, 6))
+        pos = nx.spring_layout(G, seed=42)
+        weights = [G[u][v]["weight"] for u, v in G.edges()]
+        nx.draw(G, pos, with_labels=True, node_color="lightblue", node_size=800,
+                arrows=True, width=np.array(weights) * 0.5, edge_color="gray", font_size=10)
+        edge_labels = {(u, v): d["weight"] for u, v, d in G.edges(data=True)}
+        nx.draw_networkx_edge_labels(G, pos, edge_labels=edge_labels, font_color="red")
+        plt.title("Pass Graph (directed)")
+        st.pyplot(plt)
+    else:
+        st.info("No passes detected in this video.")
+
 else:
     st.info("Upload a .mp4 football video to begin analysis.")
+```
