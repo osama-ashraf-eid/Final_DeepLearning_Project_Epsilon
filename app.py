@@ -14,7 +14,6 @@ if not os.path.exists("bytetrack.yaml"):
     tracker_url = "https://raw.githubusercontent.com/ultralytics/ultralytics/main/ultralytics/cfg/trackers/bytetrack.yaml"
     urllib.request.urlretrieve(tracker_url, "bytetrack.yaml")
 
-
 # -----------------------
 # App config
 # -----------------------
@@ -103,6 +102,20 @@ def assign_team(player_id, color, team_colors):
     return team_colors[player_id]
 
 # -----------------------
+# Possession detection parameters (tweak these if needed)
+# -----------------------
+# initialize possession-related state BEFORE the frame loop
+prev_ball_center = None
+owner_candidate_id = None
+owner_candidate_streak = 0
+confirmed_owner_id = None
+
+hold_threshold = 3             # frames required to confirm possession (tune for fps)
+proximity_threshold = 60       # pixels — proximity distance considered "near"
+speed_threshold = 250.0        # px/s — if ball speed > this, likely airborne
+overlap_margin = 8             # pixels to expand player box for overlap test
+
+# -----------------------
 # Process video when uploaded
 # -----------------------
 if uploaded_video is not None:
@@ -145,7 +158,7 @@ if uploaded_video is not None:
         st.error(f"model.track failed: {e}")
         st.stop()
 
-    # State for possession/passes
+    # State for possession/passes (reset)
     last_owner_id = None
     possession_counter = defaultdict(int)
     passes = []
@@ -154,6 +167,13 @@ if uploaded_video is not None:
     team_passes_counter = defaultdict(int)
 
     processed_frames = 0
+
+    # helper: is center in expanded bbox
+    def center_in_expanded_bbox(center, box, margin=overlap_margin):
+        x1, y1, x2, y2 = box
+        x1m, y1m = int(x1 - margin), int(y1 - margin)
+        x2m, y2m = int(x2 + margin), int(y2 + margin)
+        return (center[0] >= x1m and center[0] <= x2m and center[1] >= y1m and center[1] <= y2m)
 
     # Iterate streaming results (each frame_data corresponds to a processed frame)
     for frame_data in results_stream:
@@ -212,33 +232,95 @@ if uploaded_video is not None:
                 cv2.rectangle(frame, (x1, y1), (x2, y2), color_referee, 2)
                 cv2.putText(frame, "Referee", (x1, y1 - 10), cv2.FONT_HERSHEY_DUPLEX, 0.6, color_referee, 2)
 
-        # Ball possession logic
+        # -------------------------
+        # Improved Ball possession logic
+        # -------------------------
         current_owner_id = None
         current_owner_team = None
+
         if len(balls) > 0 and len(players) > 0:
             bx1, by1, bx2, by2 = balls[0][1]
-            ball_center = np.array([(bx1 + bx2) / 2, (by1 + by2) / 2])
+            ball_center = np.array([(bx1 + bx2) / 2.0, (by1 + by2) / 2.0])
 
+            # estimate ball speed (pixels/sec)
+            ball_speed = 0.0
+            if prev_ball_center is not None and fps and fps > 0:
+                dist_moved = np.linalg.norm(ball_center - prev_ball_center)
+                ball_speed = dist_moved * fps
+            prev_ball_center = ball_center.copy()
+
+            # find nearest player
             min_dist = 1e9
+            nearest_player = None
+            nearest_team = None
+            nearest_box = None
             for player_id, box, team_name in players:
                 px1, py1, px2, py2 = box
-                player_center = np.array([(px1 + px2) / 2, (py1 + py2) / 2])
+                player_center = np.array([(px1 + px2) / 2.0, (py1 + py2) / 2.0])
                 dist = np.linalg.norm(ball_center - player_center)
                 if dist < min_dist:
                     min_dist = dist
-                    current_owner_id = player_id
-                    current_owner_team = team_name
+                    nearest_player = player_id
+                    nearest_box = box
+                    nearest_team = team_name
 
-            if min_dist < 90:
+            # check overlap (ball center inside expanded player bbox)
+            candidate_overlap = False
+            if nearest_player is not None and nearest_box is not None:
+                candidate_overlap = center_in_expanded_bbox(ball_center, nearest_box, overlap_margin)
+
+            prox_condition = (min_dist < proximity_threshold)
+            slow_condition = (ball_speed < speed_threshold)
+
+            # candidate must be proximate AND (ball slow OR overlap)
+            candidate_ok = prox_condition and (slow_condition or candidate_overlap)
+
+            # update candidate streak
+            if candidate_ok:
+                if owner_candidate_id == nearest_player:
+                    owner_candidate_streak += 1
+                else:
+                    owner_candidate_id = nearest_player
+                    owner_candidate_streak = 1
+            else:
+                owner_candidate_id = None
+                owner_candidate_streak = 0
+
+            # confirm ownership only when streak long enough
+            if owner_candidate_id is not None and owner_candidate_streak >= hold_threshold:
+                current_owner_id = owner_candidate_id
+                current_owner_team = nearest_team
+
+                # increment possession frames
                 possession_counter[current_owner_id] += 1
                 team_possession_counter[current_owner_team] += 1
 
-                if last_owner_id is not None and current_owner_id != last_owner_id:
-                    passes.append((last_owner_id, current_owner_id))
+                # detect pass only when confirmed owner changes
+                if confirmed_owner_id is not None and current_owner_id != confirmed_owner_id:
+                    passes.append((confirmed_owner_id, current_owner_id))
                     team_passes_counter[current_owner_team] += 1
-                last_owner_id = current_owner_id
 
+                confirmed_owner_id = current_owner_id
+            else:
+                # keep previous confirmed_owner unchanged until new confirmation
+                current_owner_id = None
+                current_owner_team = None
+
+            # Optional debug overlay: speed and candidate streak
+            cv2.putText(frame, f"speed:{int(ball_speed)}px/s", (10, frame.shape[0]-40), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,255), 2)
+            if owner_candidate_id is not None:
+                cv2.putText(frame, f"cand:{owner_candidate_id} streak:{owner_candidate_streak}", (10, frame.shape[0]-20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,255,255), 2)
+
+        else:
+            # no ball or no players in frame
+            prev_ball_center = None
+            owner_candidate_id = None
+            owner_candidate_streak = 0
+            # do not reset confirmed_owner_id here (maintain until new confirmed or ball out)
+
+        # -------------------------
         # Highlight current owner
+        # -------------------------
         if current_owner_id is not None:
             for player_id, box, team_name in players:
                 if player_id == current_owner_id:
@@ -247,7 +329,9 @@ if uploaded_video is not None:
                     cv2.putText(frame, f"{team_name} #{player_id} HAS THE BALL",
                                 (px1, py1 - 15), cv2.FONT_HERSHEY_COMPLEX, 0.8, color_possession, 3)
 
+        # -------------------------
         # Overlay possession & passes summary (top-left)
+        # -------------------------
         start_y = 30
         for idx, (player_id, count) in enumerate(possession_counter.items()):
             cv2.putText(frame, f"P{player_id} Possession: {count} frames",
@@ -290,7 +374,3 @@ if uploaded_video is not None:
 
 else:
     st.info("Upload a .mp4 football video to begin analysis.")
-
-
-
-
