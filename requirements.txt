@@ -10,3 +10,5 @@ matplotlib
 gdown
 omegaconf
 lapx
+opencv-python-headless
+
