@@ -4,6 +4,17 @@ import numpy as np
 from collections import defaultdict
 from ultralytics import YOLO
 from tempfile import NamedTemporaryFile
+import os
+os.environ["OPENCV_VIDEOIO_PRIORITY_MSMF"] = "0"
+os.environ["OPENCV_VIDEOIO_PRIORITY_GSTREAMER"] = "1"
+
+try:
+    import cv2
+except ImportError as e:
+    import subprocess
+    subprocess.run(["pip", "install", "opencv-python-headless==4.9.0.80"])
+    import cv2
+
 
 st.set_page_config(page_title="Football Ball & Player Tracking", layout="wide")
 
@@ -166,3 +177,4 @@ if video_file:
     st.subheader("Passes per Team")
     for team_name, count in team_passes_counter.items():
         st.write(f"{team_name}: {count} passes")
+
