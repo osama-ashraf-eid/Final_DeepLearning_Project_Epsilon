@@ -15,13 +15,22 @@ from collections import defaultdict
 from ultralytics import YOLO
 from tempfile import NamedTemporaryFile
 
+# Page setup
+st.set_page_config(page_title="Detection and Tracking", layout="wide")
 
+# Centered title and full-width image
+st.markdown(
+    """
+    <h1 style='text-align: center; color: #0a84ff;'>⚽ Detection and Tracking</h1>
+    <div style='text-align:center;'>
+        <img src='https://images.unsplash.com/photo-1517927033932-b3d18e61fb3a'
+             style='width:100%; border-radius: 12px; margin-bottom: 30px;'>
+    </div>
+    """,
+    unsafe_allow_html=True
+)
 
-st.set_page_config(page_title="Football Ball & Player Tracking", layout="wide")
-
-st.title("⚽ Football Ball & Player Tracking with YOLOv8")
-
-# رفع الفيديو
+# Upload video
 video_file = st.file_uploader("Upload a football video", type=["mp4", "mov", "avi"])
 
 if video_file:
@@ -29,11 +38,9 @@ if video_file:
     tfile.write(video_file.read())
     video_path = tfile.name
 
-    st.video(video_path)  # عرض الفيديو الأصلي
-
+    st.video(video_path)
     st.write("Running tracking... This may take a while depending on video length.")
 
-    # تحميل موديل YOLOv8 الخاص بك
     model = YOLO("yolov8m-football_ball_only.pt")
     tracker_config = "botsort.yaml"
 
@@ -45,7 +52,6 @@ if video_file:
     output_file = NamedTemporaryFile(delete=False, suffix=".mp4").name
     out = cv2.VideoWriter(output_file, cv2.VideoWriter_fourcc(*"mp4v"), fps, (w, h))
 
-    # إعداد الألوان والـ counters
     color_player = (0, 150, 255)
     color_goalkeeper = (255, 255, 0)
     color_ball = (0, 255, 255)
@@ -84,7 +90,6 @@ if video_file:
                     team_colors[player_id] = color
         return team_colors[player_id]
 
-    # تنفيذ تتبع الفيديو
     results = model.track(
         source=video_path,
         conf=0.4,
@@ -124,7 +129,6 @@ if video_file:
                 cv2.rectangle(frame, (x1, y1), (x2, y2), color_referee, 2)
                 cv2.putText(frame, "Referee", (x1, y1 - 10), cv2.FONT_HERSHEY_DUPLEX, 0.6, color_referee, 2)
 
-        # حساب الاستحواذ والتمريرات
         current_owner_id, current_owner_team = None, None
         if balls and players:
             bx1, by1, bx2, by2 = balls[0][1]
@@ -145,13 +149,12 @@ if video_file:
                     team_passes_counter[current_owner_team] += 1
                 last_owner_id = current_owner_id
 
-        # تمييز اللاعب الذي يملك الكرة
         if current_owner_id is not None:
             for player_id, box, team_name in players:
                 if player_id == current_owner_id:
                     px1, py1, px2, py2 = box
                     cv2.rectangle(frame, (px1, py1), (px2, py2), color_possession, 4)
-                    cv2.putText(frame, f" {team_name} #{player_id} HAS THE BALL",
+                    cv2.putText(frame, f"{team_name} #{player_id} HAS THE BALL",
                                 (px1, py1 - 15), cv2.FONT_HERSHEY_COMPLEX, 0.8, color_possession, 3)
 
         out.write(frame)
@@ -162,7 +165,6 @@ if video_file:
     st.success("✅ Tracking completed!")
     st.video(output_file)
 
-    # عرض ملخص الاستحواذ والتمريرات
     st.subheader("Ball Possession Summary - Players")
     for player_id, count in possession_counter.items():
         st.write(f"Player {player_id}: {count} frames")
@@ -178,5 +180,3 @@ if video_file:
     st.subheader("Passes per Team")
     for team_name, count in team_passes_counter.items():
         st.write(f"{team_name}: {count} passes")
-
-
