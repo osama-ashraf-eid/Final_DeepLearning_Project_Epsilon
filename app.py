@@ -10,6 +10,20 @@ except ImportError:
     subprocess.run(["pip", "install", "opencv-python-headless==4.9.0.80"])
     import cv2
     cv2.setNumThreads(1)
+import subprocess
+import sys
+
+# تأكد من تثبيت مكتبة libgl قبل استيراد cv2
+try:
+    import cv2
+    cv2.setNumThreads(1)
+except Exception as e:
+    subprocess.run([sys.executable, "-m", "pip", "install", "opencv-python-headless==4.9.0.80"])
+    subprocess.run(["apt-get", "update", "-y"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    subprocess.run(["apt-get", "install", "-y", "libgl1"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    import cv2
+    cv2.setNumThreads(1)
+
 
 import streamlit as st
 import numpy as np
@@ -212,3 +226,4 @@ if video_file:
 
 else:
     st.info("👆 Please upload a video to start detection.")
+
