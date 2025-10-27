@@ -1,14 +1,15 @@
-streamlit==1.39.0
-ultralytics==8.2.50
-torch==2.3.0
-numpy==1.26.4
-pandas==2.2.3
-opencv-python-headless==4.9.0.80
-Pillow==10.3.0
-matplotlib==3.9.2
-gdown==5.2.0
-omegaconf==2.3.0
-lapx==0.5.8
+streamlit
+ultralytics
+torch
+numpy
+pandas
+opencv-python-headless
+Pillow
+matplotlib
+gdown
+omegaconf
+lapx
 pyglet
+
 
 
