@@ -2,41 +2,37 @@ import os
 os.environ["OPENCV_VIDEOIO_PRIORITY_MSMF"] = "0"
 os.environ["OPENCV_VIDEOIO_PRIORITY_GSTREAMER"] = "1"
 
-# ===============================
-# التأكد من وجود OpenCV
-# ===============================
 try:
     import cv2
+    cv2.setNumThreads(1)
 except ImportError:
     import subprocess
     subprocess.run(["pip", "install", "opencv-python-headless==4.9.0.80"])
     import cv2
+    cv2.setNumThreads(1)
 
 import streamlit as st
 import numpy as np
 from collections import defaultdict
 from ultralytics import YOLO
-from tempfile import NamedTemporaryFile
+import tempfile
 import gdown
 
 # ===============================
-# إعداد صفحة Streamlit
+# إعداد واجهة Streamlit
 # ===============================
 st.set_page_config(page_title="⚽ Detection and Tracking", layout="wide")
 
-st.markdown(
-    """
-    <h1 style='text-align: center; color: #0a84ff;'>⚽ Detection and Tracking</h1>
-    <div style='text-align:center;'>
-        <img src='https://images.unsplash.com/photo-1517927033932-b3d18e61fb3a'
-             style='width:100%; border-radius: 12px; margin-bottom: 30px;'>
-    </div>
-    """,
-    unsafe_allow_html=True
-)
+st.markdown("""
+<h1 style='text-align: center; color: #0a84ff;'>⚽ Detection and Tracking</h1>
+<div style='text-align:center;'>
+    <img src='https://images.unsplash.com/photo-1517927033932-b3d18e61fb3a'
+         style='width:100%; border-radius: 12px; margin-bottom: 30px;'>
+</div>
+""", unsafe_allow_html=True)
 
 # ===============================
-# تحميل الموديل من Google Drive لو مش موجود
+# تحميل الموديل من Google Drive
 # ===============================
 MODEL_PATH = "yolov8m-football_ball_only.pt"
 DRIVE_URL = "https://drive.google.com/uc?id=1jDmtelt3wJgxRj0j7928VyFNAjq0dzk4"
@@ -65,28 +61,29 @@ except Exception as e:
 video_file = st.file_uploader("🎬 Upload a football video", type=["mp4", "mov", "avi"])
 
 if video_file:
-    tfile = NamedTemporaryFile(delete=False)
-    tfile.write(video_file.read())
-    video_path = tfile.name
+    fd, video_path = tempfile.mkstemp(suffix=".mp4")
+    with open(video_path, "wb") as f:
+        f.write(video_file.read())
 
     st.video(video_path)
     st.write("🏃 Running tracking... This may take a while depending on video length.")
 
     tracker_config = "botsort.yaml"
+    if not os.path.exists(tracker_config):
+        with open(tracker_config, "w") as f:
+            f.write("tracker_type: bytetrack\n")  # نسخة احتياطية بسيطة
 
     cap = cv2.VideoCapture(video_path)
     w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    fps = cap.get(cv2.CAP_PROP_FPS)
+    fps = cap.get(cv2.CAP_PROP_FPS) or 25
 
-    output_file = NamedTemporaryFile(delete=False, suffix=".mp4").name
-    out = cv2.VideoWriter(output_file, cv2.VideoWriter_fourcc(*"mp4v"), fps, (w, h))
+    output_path = tempfile.mktemp(suffix=".mp4")
+    out = cv2.VideoWriter(output_path, cv2.VideoWriter_fourcc(*"mp4v"), fps, (w, h))
 
-    color_player = (0, 150, 255)
-    color_goalkeeper = (255, 255, 0)
     color_ball = (0, 255, 255)
-    color_referee = (200, 200, 200)
     color_possession = (0, 255, 0)
+    color_referee = (200, 200, 200)
 
     last_owner_id = None
     possession_counter = defaultdict(int)
@@ -120,9 +117,6 @@ if video_file:
                     team_colors[player_id] = color
         return team_colors[player_id]
 
-    # ===============================
-    # تشغيل التتبع
-    # ===============================
     results = model.track(
         source=video_path,
         conf=0.4,
@@ -143,7 +137,6 @@ if video_file:
         ids = frame_data.boxes.id.cpu().numpy().astype(int)
 
         balls, players = [], []
-
         for box, cls, track_id in zip(boxes, classes, ids):
             x1, y1, x2, y2 = map(int, box)
             if cls == 0:
@@ -199,11 +192,8 @@ if video_file:
     out.release()
 
     st.success("✅ Tracking completed!")
-    st.video(output_file)
+    st.video(output_path)
 
-    # ===============================
-    # عرض الإحصائيات
-    # ===============================
     st.subheader("📊 Ball Possession Summary - Players")
     for player_id, count in possession_counter.items():
         st.write(f"Player {player_id}: {count} frames")
