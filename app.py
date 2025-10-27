@@ -1,29 +1,23 @@
 import os
+import subprocess
+import sys
+
+# ===============================
+# Fix OpenCV and libGL Issues (Streamlit Cloud)
+# ===============================
 os.environ["OPENCV_VIDEOIO_PRIORITY_MSMF"] = "0"
 os.environ["OPENCV_VIDEOIO_PRIORITY_GSTREAMER"] = "1"
 
 try:
     import cv2
     cv2.setNumThreads(1)
-except ImportError:
-    import subprocess
-    subprocess.run(["pip", "install", "opencv-python-headless==4.9.0.80"])
-    import cv2
-    cv2.setNumThreads(1)
-import subprocess
-import sys
-
-# تأكد من تثبيت مكتبة libgl قبل استيراد cv2
-try:
-    import cv2
-    cv2.setNumThreads(1)
 except Exception as e:
-    subprocess.run([sys.executable, "-m", "pip", "install", "opencv-python-headless==4.9.0.80"])
+    # إعادة تثبيت OpenCV headless + libgl1 في بيئة Streamlit Cloud
+    subprocess.run([sys.executable, "-m", "pip", "install", "--quiet", "opencv-python-headless==4.9.0.80"])
     subprocess.run(["apt-get", "update", "-y"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     subprocess.run(["apt-get", "install", "-y", "libgl1"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     import cv2
     cv2.setNumThreads(1)
-
 
 import streamlit as st
 import numpy as np
@@ -33,7 +27,7 @@ import tempfile
 import gdown
 
 # ===============================
-# إعداد واجهة Streamlit
+# Streamlit UI Setup
 # ===============================
 st.set_page_config(page_title="⚽ Detection and Tracking", layout="wide")
 
@@ -46,7 +40,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ===============================
-# تحميل الموديل من Google Drive
+# YOLO Model Download
 # ===============================
 MODEL_PATH = "yolov8m-football_ball_only.pt"
 DRIVE_URL = "https://drive.google.com/uc?id=1jDmtelt3wJgxRj0j7928VyFNAjq0dzk4"
@@ -61,7 +55,7 @@ if not os.path.exists(MODEL_PATH):
         st.stop()
 
 # ===============================
-# تحميل الموديل
+# Load YOLO Model
 # ===============================
 try:
     model = YOLO(MODEL_PATH)
@@ -70,7 +64,7 @@ except Exception as e:
     st.stop()
 
 # ===============================
-# واجهة المستخدم
+# File Upload Section
 # ===============================
 video_file = st.file_uploader("🎬 Upload a football video", type=["mp4", "mov", "avi"])
 
@@ -80,12 +74,12 @@ if video_file:
         f.write(video_file.read())
 
     st.video(video_path)
-    st.write("🏃 Running tracking... This may take a while depending on video length.")
+    st.write("🏃 Running tracking... Please wait ⏳")
 
     tracker_config = "botsort.yaml"
     if not os.path.exists(tracker_config):
         with open(tracker_config, "w") as f:
-            f.write("tracker_type: bytetrack\n")  # نسخة احتياطية بسيطة
+            f.write("tracker_type: bytetrack\n")
 
     cap = cv2.VideoCapture(video_path)
     w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -106,6 +100,9 @@ if video_file:
     team_possession_counter = defaultdict(int)
     team_passes_counter = defaultdict(int)
 
+    # ===============================
+    # Helper Functions
+    # ===============================
     def get_average_color(frame, box):
         x1, y1, x2, y2 = box
         roi = frame[y1:y2, x1:x2]
@@ -131,6 +128,9 @@ if video_file:
                     team_colors[player_id] = color
         return team_colors[player_id]
 
+    # ===============================
+    # Run YOLO Tracking
+    # ===============================
     results = model.track(
         source=video_path,
         conf=0.4,
@@ -226,4 +226,3 @@ if video_file:
 
 else:
     st.info("👆 Please upload a video to start detection.")
-
