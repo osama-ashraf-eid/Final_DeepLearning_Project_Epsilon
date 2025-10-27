@@ -3,13 +3,10 @@ ultralytics
 torch
 numpy
 pandas
-opencv-python-headless
+opencv-python-headless # Ensure this is present
 Pillow
 matplotlib
 gdown
 omegaconf
 lapx
 pyglet
-
-
-
