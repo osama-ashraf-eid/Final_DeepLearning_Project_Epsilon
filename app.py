@@ -74,7 +74,11 @@ if video_file:
     tracker_config = "botsort.yaml"
     if not os.path.exists(tracker_config):
         with open(tracker_config, "w") as f:
+            # FIX: Added required tracker parameters including track_buffer (default is 30)
             f.write("tracker_type: bytetrack\n")
+            f.write("track_buffer: 30\n")
+            f.write("track_high_thresh: 0.5\n")
+            f.write("track_low_thresh: 0.1\n")
 
     cap = cv2.VideoCapture(video_path)
     w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
