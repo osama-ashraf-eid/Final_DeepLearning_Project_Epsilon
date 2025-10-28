@@ -132,13 +132,11 @@ if video_file:
     # ===============================
     # Run YOLO Tracking
     # ===============================
-    results = model.track(
-        source=video_path,
-        conf=0.4,
-        iou=0.5,
-        tracker=tracker_config,
-        persist=True,
-        stream=True
+   results = model.predict(
+    source=video_path,
+    conf=0.4,
+    iou=0.5,
+    stream=True
     )
 
     for frame_data in results:
@@ -227,3 +225,4 @@ if video_file:
 
 else:
     st.info("👆 Please upload a video to start detection.")
+
