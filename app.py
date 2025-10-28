@@ -26,9 +26,10 @@ st.write("Upload a video file to run real-time player and ball tracking, team as
 
 
 # Define the URL for your model weights
-# IMPORTANT: This must be a DIRECT DOWNLOAD LINK (e.g., from GitHub Releases or a publicly shared Google Drive link adjusted for direct download, or other storage services).
-# The Google Drive link you provided (view?usp=drive_link) IS NOT a direct download link and will require special handling or replacement.
-MODEL_DOWNLOAD_URL = "https://example.com/direct_download_link_to_yolov8m-football_ball_only.pt"
+# The file ID from your Google Drive link is '1jDmtelt3wJgxRj0j7928VyFNAjq0dzk4'.
+# IMPORTANT: This link only works if the file is publicly shared ('Anyone with the link can view').
+MODEL_FILE_ID = "1jDmtelt3wJgxRj0j7928VyFNAjq0dzk4"
+MODEL_DOWNLOAD_URL = f"https://drive.google.com/uc?export=download&id={MODEL_FILE_ID}"
 MODEL_FILE_NAME = "yolov8m-football_ball_only.pt"
 
 
@@ -40,7 +41,7 @@ def download_model_weights(url, filename):
     Downloads the model weights file from the given URL and saves it temporarily.
     This function is cached, so it only runs once.
     """
-    st.info(f"Downloading model weights from {url}...")
+    st.info(f"Downloading model weights from Google Drive...")
     
     # Create a temporary directory to store the model
     temp_dir = tempfile.mkdtemp()
@@ -59,7 +60,7 @@ def download_model_weights(url, filename):
         return model_path
 
     except requests.exceptions.RequestException as e:
-        st.error(f"Error downloading model from URL. Please ensure the link is a DIRECT DOWNLOAD link and the file is publicly accessible. Error: {e}")
+        st.error(f"Error downloading model from URL. Please ensure the file is publicly accessible on Google Drive. Error: {e}")
         return None
     except Exception as e:
         st.error(f"An unexpected error occurred during model download: {e}")
@@ -69,7 +70,6 @@ def download_model_weights(url, filename):
 model_local_path = None
 try:
     # 1. Download the model file using the cached function
-    # NOTE: You MUST replace MODEL_DOWNLOAD_URL with a functional direct link.
     model_local_path = download_model_weights(MODEL_DOWNLOAD_URL, MODEL_FILE_NAME)
     
     if model_local_path is None:
