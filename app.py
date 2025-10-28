@@ -17,7 +17,7 @@ st.markdown("---")
 
 # Expressive Image (Using a placeholder image URL for a football match scene)
 image_url = "https://placehold.co/1200x300/171717/ffffff?text=Advanced+Football+Match+Analysis"
-st.image(image_url, use_column_width=True)
+st.image(image_url, use_container_width=True)
 
 st.markdown("---")
 st.write("Upload a video file to run real-time player and ball tracking, team assignment, and possession analysis.")
