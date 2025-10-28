@@ -136,8 +136,8 @@ if video_file:
     source=video_path,
     conf=0.4,
     iou=0.5,
-    stream=True
-    )
+    stream=True)
+    
 
     for frame_data in results:
         frame = frame_data.orig_img.copy()
@@ -225,4 +225,5 @@ if video_file:
 
 else:
     st.info("👆 Please upload a video to start detection.")
+
 
