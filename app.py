@@ -52,6 +52,16 @@ def download_model_weights(url, filename):
         response = requests.get(url, stream=True)
         response.raise_for_status() # Raise exception for bad status codes
         
+        # CRITICAL CHECK: Ensure we didn't receive an HTML error page or warning page
+        content_type = response.headers.get('Content-Type', '').lower()
+        if 'text/html' in content_type or 'charset' in content_type:
+            # We received an HTML document instead of the binary file, indicating a block (e.g., access denied, virus scan warning)
+            st.error("Download failed: Received an HTML page instead of the binary model file (.pt).")
+            st.error("This error ('invalid load key, <') means the file is either NOT PUBLICLY SHARED, or Google Drive is redirecting to a security/virus warning page.")
+            st.error("Action required: Please ensure the sharing setting for your Google Drive file is set to 'Anyone with the link' and try again.")
+            return None
+
+        # Proceed with streaming and saving the binary file
         with open(model_path, "wb") as f:
             for chunk in response.iter_content(chunk_size=8192):
                 f.write(chunk)
@@ -60,9 +70,12 @@ def download_model_weights(url, filename):
         return model_path
 
     except requests.exceptions.RequestException as e:
-        st.error(f"Error downloading model from URL. Please ensure the file is publicly accessible on Google Drive. Error: {e}")
+        # Catch network/request errors
+        st.error(f"Error downloading model from URL. Request Error: {e}")
+        st.error("Please verify your internet connection or the correctness of the Google Drive ID.")
         return None
     except Exception as e:
+        # Catch other exceptions
         st.error(f"An unexpected error occurred during model download: {e}")
         return None
 
