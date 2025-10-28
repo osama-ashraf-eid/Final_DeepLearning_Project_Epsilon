@@ -5,6 +5,8 @@ import os
 import tempfile
 from collections import defaultdict
 from ultralytics import YOLO
+import requests # Added for downloading the model file
+from io import BytesIO
 
 # --- Configuration and Setup ---
 
@@ -22,15 +24,62 @@ st.image(image_url, use_container_width=True)
 st.markdown("---")
 st.write("Upload a video file to run real-time player and ball tracking, team assignment, and possession analysis.")
 
-# Model Loading (Important: Update this line with the correct path to your custom YOLO weights!)
+
+# Define the URL for your model weights
+# IMPORTANT: This must be a DIRECT DOWNLOAD LINK (e.g., from GitHub Releases or a publicly shared Google Drive link adjusted for direct download, or other storage services).
+# The Google Drive link you provided (view?usp=drive_link) IS NOT a direct download link and will require special handling or replacement.
+MODEL_DOWNLOAD_URL = "https://example.com/direct_download_link_to_yolov8m-football_ball_only.pt"
+MODEL_FILE_NAME = "yolov8m-football_ball_only.pt"
+
+
+# --- Resource Caching for Model Download ---
+
+@st.cache_resource
+def download_model_weights(url, filename):
+    """
+    Downloads the model weights file from the given URL and saves it temporarily.
+    This function is cached, so it only runs once.
+    """
+    st.info(f"Downloading model weights from {url}...")
+    
+    # Create a temporary directory to store the model
+    temp_dir = tempfile.mkdtemp()
+    model_path = os.path.join(temp_dir, filename)
+
+    try:
+        # Use a standard download method.
+        response = requests.get(url, stream=True)
+        response.raise_for_status() # Raise exception for bad status codes
+        
+        with open(model_path, "wb") as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                f.write(chunk)
+        
+        st.success(f"Model downloaded successfully to {model_path}")
+        return model_path
+
+    except requests.exceptions.RequestException as e:
+        st.error(f"Error downloading model from URL. Please ensure the link is a DIRECT DOWNLOAD link and the file is publicly accessible. Error: {e}")
+        return None
+    except Exception as e:
+        st.error(f"An unexpected error occurred during model download: {e}")
+        return None
+
+# --- Model Loading ---
+model_local_path = None
 try:
-    # IMPORTANT: The model weights file 'yolov8m-football_ball_only.pt' MUST be available in the deployment environment.
-    # If not available, Streamlit will fail here. Using a public model for initial setup might be safer.
-    # For demonstration, we assume your custom weights are accessible.
-    model = YOLO("yolov8m-football_ball_only.pt")
-    # For a fully public, downloadable model, you could use: model = YOLO("yolov8n.pt")
+    # 1. Download the model file using the cached function
+    # NOTE: You MUST replace MODEL_DOWNLOAD_URL with a functional direct link.
+    model_local_path = download_model_weights(MODEL_DOWNLOAD_URL, MODEL_FILE_NAME)
+    
+    if model_local_path is None:
+        st.stop() # Stop the app if download failed
+
+    # 2. Load the model from the temporary local path
+    model = YOLO(model_local_path)
+    
 except Exception as e:
-    st.error(f"Failed to load the YOLO model weights. Please ensure 'yolov8m-football_ball_only.pt' is accessible. Error: {e}")
+    st.error(f"Failed to load the YOLO model weights from the downloaded path: {model_local_path}. Error: {e}")
     st.stop()
 
 
