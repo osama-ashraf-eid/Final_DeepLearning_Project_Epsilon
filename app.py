@@ -40,25 +40,42 @@ def download_model_weights(url, filename):
     """
     Downloads the model weights file from the given URL and saves it temporarily.
     This function is cached, so it only runs once.
+    This version includes an attempt to bypass Google Drive's virus scan warning.
     """
-    st.info(f"Downloading model weights from Google Drive...")
+    st.info(f"Attempting to download model weights from Google Drive...")
     
     # Create a temporary directory to store the model
     temp_dir = tempfile.mkdtemp()
     model_path = os.path.join(temp_dir, filename)
+    session = requests.Session()
 
     try:
-        # Use a standard download method.
-        response = requests.get(url, stream=True)
-        response.raise_for_status() # Raise exception for bad status codes
+        # First request
+        response = session.get(url, stream=True)
+        response.raise_for_status()
         
-        # CRITICAL CHECK: Ensure we didn't receive an HTML error page or warning page
+        # Check for the Google Drive virus scan warning
+        # This warning often returns a 200 status but an HTML page containing "confirm" and sets a cookie
+        if 'download_warning' in response.cookies or "confirm" in response.text.lower():
+            st.info("Google Drive Warning detected. Attempting to bypass virus scan.")
+            token = response.cookies.get('download_warning', None)
+            
+            if token:
+                # Construct the bypass URL using the confirmation token
+                download_url = f"{url}&confirm={token}"
+                response = session.get(download_url, stream=True)
+                response.raise_for_status()
+            else:
+                # If the cookie/token isn't easily found, we cannot proceed automatically
+                st.error("Google Drive Warning: The model file is too large, and we could not automatically bypass the virus scan warning page.")
+                st.error("Action required: Please ensure the sharing setting for your Google Drive file is set to 'Anyone with the link' and try sharing it via a different service like Dropbox or a direct host if this continues to fail.")
+                return None
+
+        # Final CRITICAL CHECK: Ensure we didn't receive an HTML error page after all attempts
         content_type = response.headers.get('Content-Type', '').lower()
-        if 'text/html' in content_type or 'charset' in content_type:
-            # We received an HTML document instead of the binary file, indicating a block (e.g., access denied, virus scan warning)
-            st.error("Download failed: Received an HTML page instead of the binary model file (.pt).")
-            st.error("This error ('invalid load key, <') means the file is either NOT PUBLICLY SHARED, or Google Drive is redirecting to a security/virus warning page.")
-            st.error("Action required: Please ensure the sharing setting for your Google Drive file is set to 'Anyone with the link' and try again.")
+        if 'text/html' in content_type:
+            st.error("Download failed: Final response was still HTML (invalid load key, <).")
+            st.error("Action required: **The file is likely NOT PUBLICLY SHARED.** Please ensure sharing is set to 'Anyone with the link'.")
             return None
 
         # Proceed with streaming and saving the binary file
@@ -75,7 +92,7 @@ def download_model_weights(url, filename):
         st.error("Please verify your internet connection or the correctness of the Google Drive ID.")
         return None
     except Exception as e:
-        # Catch other exceptions
+        # Catch other exceptions, including the failed YOLO load if the file size was zero or corrupted
         st.error(f"An unexpected error occurred during model download: {e}")
         return None
 
@@ -92,7 +109,9 @@ try:
     model = YOLO(model_local_path)
     
 except Exception as e:
+    # This block catches the 'invalid load key, <' error if the final file saved was HTML
     st.error(f"Failed to load the YOLO model weights from the downloaded path: {model_local_path}. Error: {e}")
+    st.error("Final model load failed. Please ensure the file is successfully downloaded and not an HTML error page.")
     st.stop()
 
 
